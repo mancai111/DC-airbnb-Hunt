@@ -1,0 +1,529 @@
+---
+title: "D.C. Airbnb Hunt"
+author: "Foo Fivers: Adrienne Rogers ; Atharva Haldankar ; Mohammad Maaz ; Ruiqi Li"
+date: "`r Sys.Date()`"
+output:
+  prettydoc::html_pretty:
+    theme: architect
+    highlight: github
+    toc: true
+    number_sections: true
+
+---
+
+```{r, echo = FALSE, results = 'hide', message = FALSE, warning = FALSE}
+library(dplyr)
+library(knitr)
+library(kableExtra)
+library(readr)
+library(ggplot2)
+library(knitr)
+library(kableExtra)
+library(leaflet)
+library(tidytext)
+library(stringr)
+library(caret)
+library(class)
+library(rpart)
+knitr::opts_chunk$set(warning = FALSE, fig.align = 'center')
+```
+
+# Introduction
+
+For the final project, Team Five owns a few properties in DC that we would like to list on AirBnB. Before creating the listing, we need to know what is the most competitive price to list each of our properties at.
+
+# SMART Question
+
+The question we hope to answer with this project is "Given certain attributes of a rental property, what is a competitive price to list it on AirBnB?"
+
+# Dataset
+
+```{r, echo = FALSE}
+df <- read.csv('listings_detailed.csv')
+```
+
+The raw data is obtained from Inside Airbnb, an open-source data tool providing the web scraped Airbnb listing information by cities. It includes `r nrow(df)` records with `r ncol(df)` data columns in total size. Below are all of the data columns. For example, we have columns for id, price, host name, location, neighborhood, review ratingscore, etc.
+  
+```{r}
+glimpse(df)
+```
+
+```{r}
+
+# get columns we need
+df <- df %>% 
+  select(neighbourhood_cleansed, latitude, longitude, accommodates, room_type, bedrooms, beds, amenities, price) %>% 
+  mutate(price = as.numeric(parse_number(price)),
+         neighbourhood_cleansed = as.factor(neighbourhood_cleansed),
+         room_type = as.factor(room_type),
+         bedrooms = as.factor(bedrooms)) %>%
+  rename(neighbourhood = neighbourhood_cleansed)
+
+# remove all NAs
+df = na.omit(df)
+```
+  
+We then preprocessed this raw dataset by selecting specific data columns and converting the datatypes of some columns. Eventually, the cleaned dataset has `r ncol(df)` records with `r nrow(df)` columns after column renaming and NA removal.
+
+```{r, echo = FALSE}
+#pretty output for presentation
+data.frame(variable = names(df),
+           classe = sapply(df, typeof),
+           first_values = sapply(df, function(x) paste0(head(x,2),  collapse = ", ")),
+           row.names = NULL) %>% 
+  kable()
+```
+
+The amenities column was not usable as is, so we parse it to create indicator variables for each amenity.
+```{r}
+# remove commas and stuff from amenities
+df$amenities <- tolower(str_replace_all(df$amenities, "[\"\\[\\]]", ""))
+
+# get all possible amenities
+all_amenities = as.data.frame(table(strsplit(paste(df$amenities, collapse=", "),", "))) %>% rename(amenity=Var1)
+
+# get most frequent amenities
+top_amenities = all_amenities %>% filter(Freq > 500)
+
+# create an indicator column for each amenity
+for (a in top_amenities$amenity){
+  colname <- str_replace_all(a, " ", "_")
+  isPresent <- grepl(a, df$amenities)
+  if(any(isPresent)){
+    df[colname] <- as.factor(isPresent)
+  }
+}
+
+df <- df %>% select(-amenities)
+
+df %>% select(bed_linens:breakfast) %>% head()  %>% kable()
+```
+
+```{r}
+test_units <- read.csv("team5unit.csv")
+test_units$bedrooms <- as.factor(test_units$bedrooms)
+test_units$beds <- as.integer(test_units$beds)
+test_units <- test_units %>% mutate_if(is.logical,as.factor)
+colnames(test_units)[58] <- "room-darkening_shades"
+```
+# Exploratory Data Analysis
+
+
+# Modeling
+
+```{r echo = FALSE, results = 'markup', message = FALSE, warning = FALSE}
+str(df)
+```
+
+## Linear Regression
+
+```{r}
+
+# fit model
+lr <- lm(price ~ ., data = df)
+summary(lr)
+
+# metrics
+lr <- lm(price ~ ., data = df)
+summary(lr)
+
+# metrics
+lr_pred <- predict(lr)
+actual <- df$price
+lr_mse <- mean((actual - lr_pred)^2)
+lr_rmse <- sqrt(mean((actual - lr_pred)^2))
+lr_mae <- mean(abs(actual - lr_pred))
+cat('RMSE:', lr_rmse, 'MAE:', lr_mae)
+
+# plot model evaluation
+plot(lr)
+
+# feature importance
+lr_all_features <- summary(lr)$coefficients %>% as.data.frame()
+lr_top_features <- lr_all_features %>%
+  mutate(feature = rownames(lr_all_features)) %>%
+  filter(`Pr(>|t|)` < 0.05 & feature != '(Intercept)') %>%
+  arrange(abs(Estimate)) %>%
+  select(Estimate, feature) %>%
+  tail(5)
+
+ggplot(lr_top_features, aes(x=feature, y = Estimate)) + geom_bar(stat="identity") + coord_flip()
+```
+
+## Regression Tree
+
+```{r}
+# fit model
+tree_fit <- rpart(price ~ ., method="anova", control=rpart.control(minsplit=100, cp=0.01), data=df)
+printcp(tree_fit)
+#tree_pruned <- prune.tree(tree_fit)
+
+# metrics
+tree_pred <- predict(tree_fit)
+actual <- df$price
+tree_mse <- mean((actual - tree_pred)^2)
+tree_rmse <- sqrt(mean((actual - tree_pred)^2))
+tree_mae <- mean(abs(actual - tree_pred))
+tree_r2 <- R2(actual, tree_pred)
+cat('RMSE:', tree_rmse, 'MAE:', tree_mae, 'R2:', tree_r2)
+
+# plot tree
+library(rpart.plot)
+prp(tree_fit)
+```
+
+## K-nearest Neighbours
+
+```{r}
+#prepare data for KNN
+#union in values for team units
+
+
+#update data set to all numeric
+df_knn1<- df
+test_units_knn <- test_units
+df_comb <-union_all(df_knn1,test_units_knn)
+df_comb$neighbourhood <- as.factor(df_comb$neighbourhood)
+df_comb$room_type <- as.factor(df_comb$room_type)
+df_knn <- df_comb %>% mutate_if(is.factor,as.numeric)
+df_knn$accommodates <- as.numeric(df_knn$accommodates)
+df_knn$beds <- as.numeric(df_knn$beds)
+df_knn[,9:70] <- df_knn[,9:70]-1
+df_knn <- na.omit(df_knn)
+
+
+
+#separate team units for future use
+df_knn_units <- df_knn[6903:6905,]
+df_knn <- df_knn[-c(6903:6905),]
+
+#dataset is now all numeric
+str(df_knn_units)
+str(df_knn)
+
+#split data
+set.seed(5)
+indexes <-  createDataPartition(df_knn$price, p = .80, list = F)
+train  <-  df_knn[indexes, ]
+test <-  df_knn[-indexes, ]
+
+
+```
+
+```{r}
+d <- df_knn[,9:70]
+d <- data.frame(ammenity = names(d),amount=colSums(d))
+sums <- d[order(-d$amount),]
+sums <- head(sums,15)
+
+## set the levels in order we want
+
+ggplot(data=sums, aes(x=reorder(ammenity, -amount), y=amount)) +
+  geom_bar(stat="identity", fill ="dodgerblue")+
+  theme(axis.text.x = element_text(angle = 90, size=14))+
+  theme(axis.text.x = element_text(angle = 90),
+        axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14),
+        plot.title = element_text(color="black", face="bold", size=18, hjust=0),
+        panel.grid.major = element_line(colour = "grey90", size = 0.2),
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(fill = 'white'),
+        legend.position = "none")+
+        labs( x="Amenity (Top 15)", y="Frequency")+
+        ggtitle("Distribution of Amenities in DC AirBnBs")
+
+
+library(corrplot)
+colnames(df_knn)
+df_knn_corr <- df_knn[,c(1,4,5,7,8,9,10,26,34,35,37,38,40,43,46,49,50,66,67,68,69)]
+m <- cor(df_knn_corr)
+corrplot(m, method = 'shade', diag = FALSE,  tl.cex = 0.7, type="upper", 
+         tl.col = "darkblue", tl.srt = 45)
+```
+
+```{r}
+# #pca to determine threshold for variables for knn
+# 
+# # dataset
+# pca_train = train %>% select( -price )
+# pca_test = test %>% select( -price )
+# pca_test_units <- df_knn_units %>% select( -price )
+# 
+# pr.out <- prcomp(pca_train, scale =TRUE) 
+# summary(pr.out)
+# 
+# biplot(pr.out, scale = 0)
+# 
+# 
+# pr.var <- (pr.out$sdev^2)
+# pve <- pr.var/sum(pr.var)
+# plot(cumsum(pve), xlab="Principal Component (standardized)", ylab ="Cumulative Proportion of Variance Explained",ylim=c(0,1),type="b")
+
+#to decrease the variables significantly we will want to reduce variance explained threshold to 80%
+```
+
+```{r}
+
+#without PCA Preprocessing
+
+ctrl0 <- trainControl(method = "repeatedcv", number = 5, repeats=3)
+
+knnFit0 <- train(price ~ .,
+                data = train, 
+                method     = "knn",
+                tuneGrid   = expand.grid(k = 1:30),
+                trControl  = ctrl0, 
+                preProcess = c('scale','center'),
+                metric     = "RMSE")
+
+knnFit0
+
+
+# #with PCA 30
+# 
+# # Creating a new dataset
+# train_pca <-  data.frame( price = train$price, pr.out$x )
+# test_pca <- as.data.frame( predict( pr.out, newdata = pca_test ) )
+# test_pca_units <-  as.data.frame(predict(pr.out, newdata=pca_test_units))
+# 
+# new_train = train_pca[, 1:31]
+# new_test =  test_pca[, 1:30]
+# unit_pred =  test_pca_units[, 1:30]
+# 
+# 
+# #run new knn
+# 
+# ctrl <- trainControl(method = "repeatedcv", number = 5, repeats=3)
+# 
+# knnFit <- train(price ~ .,
+#                 data = new_train, 
+#                 method     = "knn",
+#                 tuneGrid   = expand.grid(k = 1:30),
+#                 trControl  = ctrl, 
+#                 preProcess = c('scale','center'),
+#                 metric     = "RMSE")
+# 
+# knnFit
+
+
+```
+
+```{r}
+
+#test model accuracy without pca
+knnPredict0 <- predict(knnFit0,newdata = test[,-8])
+
+
+mse0 = mean((test$price - knnPredict0)^2)
+mae0 = caret::MAE(test$price, knnPredict0)
+rmse0 = caret::RMSE(test$price, knnPredict0)
+
+##R-square
+SSres = sum((test$price - knnPredict0)^2)
+SStot = sum((test$price - mean(train$price))^2)
+Rsquare = 1 - SSres/SStot
+
+# 
+# cat("MSE: ", mse0, "MAE: ", mae0, " RMSE: ", rmse0)
+# 
+# #test model accuracy with pca 30
+# knnPredict <- predict(knnFit,newdata = new_test)
+# 
+# mse = mean((test$price - knnPredict)^2)
+# mae = caret::MAE(test$price, knnPredict)
+# rmse = caret::RMSE(test$price, knnPredict)
+# 
+# cat("MSE: ", mse, "MAE: ", mae, " RMSE: ", rmse)
+
+
+```
+
+```{r}
+
+#plot comparison without PCA
+
+
+x <- 1:length(test$price)
+plot(x, test$price, col = "firebrick1", type = "l", lwd=2,
+     main = "DC AirBnB Data Prediction vs. Actual",ylab="Price ($)")
+lines(x, knnPredict0, col = "dodgerblue", lwd=2)
+legend("topright",  legend = c("Original-Price", "Predicted-Price"), 
+       fill = c("firebrick1", "dodgerblue"), col = 2:3,  adj = c(0, 0.6))
+
+# calculate accuracy.
+kNN_res = table(knnPredict0,
+                test$price)
+kNN_res
+sum(kNN_res)  #<- the total is all the test examples
+
+# Select the true positives and true negatives by selecting
+# only the cells where the row and column names are the same.
+kNN_res[row(kNN_res) == col(kNN_res)]
+
+# Calculate the accuracy rate by dividing the correct classifications
+# by the total number of classifications.
+kNN_acc = sum(kNN_res[row(kNN_res) == col(kNN_res)]) / sum(kNN_res)
+kNN_acc*100
+
+
+# #plot comparison with PCA 30
+# new_test_g <- cbind(test[,8], new_test)
+# colnames(new_test_g)[1] <- "price"
+# 
+# x <- 1:length(new_test_g$price)
+# plot(x, new_test_g$price, col = "firebrick1", type = "l", lwd=2,
+#      main = "DC AirBnB test data prediction")
+# lines(x, knnPredict, col = "dodgerblue", lwd=2)
+# legend("topright",  legend = c("original-price", "predicted-price"), 
+#        fill = c("firebrick1", "dodgerblue"), col = 2:3,  adj = c(0, 0.6))
+# 
+# # calculate accuracy.
+# kNN_res2 = table(knnPredict,
+#                 new_test_g$price)
+# kNN_res2
+# sum(kNN_res2)  #<- the total is all the test examples
+# 
+# # Select the true positives and true negatives by selecting
+# # only the cells where the row and column names are the same.
+# kNN_res2[row(kNN_res2) == col(kNN_res2)]
+# 
+# # Calculate the accuracy rate by dividing the correct classifications
+# # by the total number of classifications.
+# kNN_acc2 = sum(kNN_res2[row(kNN_res2) == col(kNN_res2)]) / sum(kNN_res2)
+# kNN_acc2*100
+
+```
+
+```{r}
+#predict our unit prices without PCA
+
+knnPredict2 <- predict(knnFit0,newdata = df_knn_units[,-8])
+knnPredict2
+
+# #predict our unit prices with PCA
+# 
+# knnPredict3 <- predict(knnFit,newdata = test_pca_units)
+# knnPredict3
+
+
+```
+
+## Random Forest
+
+```{r echo=FALSE}
+# encode the variables
+library(mltools)
+library(data.table)
+library(randomForest)
+library(Metrics)
+
+df.prep = as.data.table(df)
+df_encoded = one_hot(df.prep)
+```
+
+```{r}
+# drop unnecessary columns that cant be proceeded not encoded correctly
+#df_pcr = subset(df_encoded, select = -c(id, name, amenities))
+#df_pcr[,165]
+#df_pcr[,80]
+#df_pcr = df_pcr[,-c(80,165)]
+df_pcr = df_encoded
+```
+
+
+```{r}
+#split train test
+data = sort(sample(nrow(df_pcr), nrow(df_pcr)*0.7))
+train_data = df_pcr[data,]
+test_data = df_pcr[-data,]
+```
+
+```{r}
+#encode
+names(df_pcr) <- gsub(" ", "_", names(df_pcr))
+names(df_pcr) <- gsub(",", "", names(df_pcr))
+names(df_pcr) <- gsub("-", ".", names(df_pcr))
+names(df_pcr) <- gsub("/", ".", names(df_pcr))
+
+
+names(train_data) <- gsub(" ", "_", names(train_data))
+names(train_data) <- gsub(",", "", names(train_data))
+
+names(test_data) <- gsub(" ", "_", names(test_data))
+names(test_data) <- gsub(",", "", names(test_data))
+
+names(train_data) <- gsub("-", ".", names(train_data))
+names(test_data) <- gsub("-", ".", names(test_data))
+
+names(train_data) <- gsub("/", ".", names(train_data))
+names(test_data) <- gsub("/", ".", names(test_data))
+```
+
+```{r results = 'markup'}
+rf.model2 = randomForest(price ~ ., data=train_data, type = 'regression', ntree = 2000, mtry = 10, importance = TRUE, na.action = na.omit)
+```
+
+```{r results = 'markup'}
+print(rf.model2)
+```
+
+```{r results = 'markup'}
+plot(rf.model2)
+```
+
+```{r}
+#install.packages('Metrics')
+pred_total = predict(rf.model2, df_pcr)
+
+res_total = df_pcr$price - pred_total
+
+output = data.frame(pred_total, df_pcr$price)
+
+names(output) <- c('Predictions', 'Actuals')
+
+str(output)
+output
+```
+
+```{r}
+rm = rmse(df_pcr$price , pred_total)
+
+rsq = 1 - var(res_total) / var(df_pcr$price)
+
+ma = mae(df_pcr$price , pred_total)
+
+print('Root Mean Squared Error:')
+rm
+
+print('R-Squared:')
+rsq
+
+print('Mean Absolute Error:')
+ma
+```
+The MSE of Random Forest is ```r rm```, R-Sqaured is ```r rsq```, MAE is ```r ma```
+
+
+# Predict the Example 3 Prices
+
+```{r results = 'markup'}
+test_units.prep = as.data.table(test_units)
+
+# get columns we need
+test_units.prep <- test_units.prep %>% 
+  mutate(neighbourhood = as.factor(neighbourhood),
+         room_type = as.factor(room_type))
+
+test_units_encoded = one_hot(test_units.prep)
+
+names(test_units_encoded) <- gsub(" ", "_", names(test_units_encoded))
+names(test_units_encoded) <- gsub(",", "", names(test_units_encoded))
+names(test_units_encoded) <- gsub("-", ".", names(test_units_encoded))
+names(test_units_encoded) <- gsub("/", ".", names(test_units_encoded))
+
+whole = rbind(df_pcr, test_units_encoded, fill=TRUE)
+whole[is.na(whole)] <- 0
+df_test = tail(whole, n = 3)
+
+predict(rf.model2, df_test)
+```

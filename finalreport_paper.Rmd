@@ -1,0 +1,734 @@
+---
+title: "D.C. Airbnb Hunt"
+author: "Foo Fivers: Adrienne Rogers ; Atharva Haldankar ; Mohammad Maaz ; Ruiqi Li"
+date: "`r Sys.Date()`"
+output:
+  prettydoc::html_pretty:
+    theme: architect
+    highlight: github
+    toc: true
+    number_sections: true
+
+---
+
+```{r, echo = FALSE, results = 'hide', message = FALSE, warning = FALSE}
+library(dplyr)
+library(knitr)
+library(kableExtra)
+library(readr)
+library(ggplot2)
+library(knitr)
+library(kableExtra)
+library(leaflet)
+library(tidytext)
+library(stringr)
+library(caret)
+library(class)
+library(rpart)
+knitr::opts_chunk$set(warning = FALSE, echo=FALSE, results='hide', fig.align = 'center')
+```
+
+# Introduction
+
+The increase in flexibility in the workplace to allow for remote work across the country has led to an increase in renters moving across the country. According to Bloomberg Wealth, the rental occupancy rate in the US hit 97% in July 2021, increasing the demand and subsequently giving landlords the power to raise the rental rates in their neighborhoods. 
+
+This hot market has many homeowners to consider the option of renting just a portion of their space to the entire property. One way to enter this market is through a rental company such as AirBnB which allows property owners to list short term and long term rentals without needing to put together a lease. As rocketmorgage explains, AirBnB can be an intriguing option for property owners, as the variation in the lengths of stays offered can allow an owner to charge an overall greater amount per night than they could in a tradditional lease. However, without a lease, renters through AirBnB need to market their property appropriately to ensure a year round occupancy is kept. It is this risk that makes it key to make sure the right price is selected. 
+
+Renters and travelers  looking to book an Airbnb for a short term or long term rental may have hundreds of options to choose from depending on their preferences and locality. The District of Columbia (DC), for example, offers some 7,800 Airbnb listings to travelers to choose from at any time. In markets like this, property owners must make themselves competitive by trying to offer the best price for their property. 
+
+# SMART Question
+
+For this final project, Team Five owns three properties in DC that we would like to list on AirBnB. Before creating the listing, we need to know what is the most competitive price to list each of our properties at, so we can increase our occupancy rate and make a profit.The question we hope to answer with this project is **"Given certain attributes of a rental property, what is a competitive price to list it on AirBnB?"**
+
+# Dataset
+
+```{r, echo = FALSE}
+df <- read.csv('listings_detailed.csv')
+```
+
+The raw data is obtained from Inside Airbnb, an open-source data tool providing the web scraped Airbnb listing information by cities. It includes `r nrow(df)` records with `r ncol(df)` data columns in total size. Below are all of the data columns. For example, we have columns for id, price, host name, location, neighborhood, review rating scores, etc.
+  
+```{r}
+glimpse(df)
+```
+
+```{r}
+
+# get columns we need
+df <- df %>% 
+  select(neighbourhood_cleansed, latitude, longitude, accommodates, room_type, bedrooms, beds, amenities, price) %>% 
+  mutate(price = as.numeric(parse_number(price)),
+         neighbourhood_cleansed = as.factor(neighbourhood_cleansed),
+         room_type = as.factor(room_type),
+         bedrooms = as.factor(bedrooms)) %>%
+  rename(neighbourhood = neighbourhood_cleansed)
+
+# remove all NAs
+df = na.omit(df)
+```
+  
+We then preprocessed this raw dataset by selecting specific data columns and converting the datatypes of some columns. Eventually, the cleaned dataset has `r ncol(df)` records with `r nrow(df)` columns after column renaming and NA removal.
+
+```{r, echo = FALSE, results = 'show'}
+#pretty output for presentation
+data.frame(variable = names(df),
+           class = sapply(df, typeof),
+           first_values = sapply(df, function(x) paste0(head(x,2),  collapse = ", ")),
+           row.names = NULL) %>% 
+  kable()
+```
+
+The amenities column was not usable as is, so we parse it to create indicator variables for each amenity.
+
+```{r}
+# remove commas and stuff from amenities
+df$amenities <- tolower(str_replace_all(df$amenities, "[\"\\[\\]]", ""))
+
+# get all possible amenities
+all_amenities = as.data.frame(table(strsplit(paste(df$amenities, collapse=", "),", "))) %>% rename(amenity=Var1)
+
+# get most frequent amenities
+top_amenities = all_amenities %>% filter(Freq > 500)
+
+# create an indicator column for each amenity
+for (a in top_amenities$amenity){
+  colname <- str_replace_all(a, " ", "_")
+  isPresent <- grepl(a, df$amenities)
+  if(any(isPresent)){
+    df[colname] <- as.factor(isPresent)
+  }
+}
+
+df <- df %>% select(-amenities)
+
+df %>% select(bed_linens:cleaning_products) %>% head()  %>% kable()
+```
+
+We have created a dataset with our three properties:
+
+one shared room in Dupont Circle for 1 guest with access to bathtub, fireplace, kitchen, and street parking,
+one private room near Howard University for up to 2 guests with access to backyard with grill, kitchen with breakfast, and on premise parking,
+one entire property in Capitol Hill for up to 8 guests with access to backyard with grill, air conditions, street parking, and early luggage drop off.
+
+This dataset will be fed into the final model we select to predict the competitive price for each unit. 
+
+```{r}
+test_units <- read.csv("team5unit.csv")
+test_units$bedrooms <- as.factor(test_units$bedrooms)
+test_units$beds <- as.integer(test_units$beds)
+test_units <- test_units %>% mutate_if(is.logical,as.factor)
+colnames(test_units)[58] <- "room-darkening_shades"
+str(test_units)
+```
+
+```{r}
+#prepare data for KNN and EDA
+#union in values for team units
+
+#update data set to all numeric
+df_knn1<- df
+test_units_knn <- test_units
+df_comb <-union_all(df_knn1,test_units_knn)
+df_comb$neighbourhood <- as.factor(df_comb$neighbourhood)
+df_comb$room_type <- as.factor(df_comb$room_type)
+df_knn <- df_comb %>% mutate_if(is.factor,as.numeric)
+df_knn$accommodates <- as.numeric(df_knn$accommodates)
+df_knn$beds <- as.numeric(df_knn$beds)
+df_knn[,9:70] <- df_knn[,9:70]-1
+df_knn <- na.omit(df_knn)
+
+#separate team units for future use
+df_knn_units <- df_knn[6903:6905,]
+df_knn <- df_knn[-c(6903:6905),]
+
+#dataset is now all numeric
+str(df_knn)
+
+#split data
+set.seed(5)
+indexes <-  createDataPartition(df_knn$price, p = .80, list = F)
+train  <-  df_knn[indexes, ]
+test <-  df_knn[-indexes, ]
+
+
+```
+
+# Exploratory Data Analysis
+
+We visualize the distributions of the columns in our dataset in order to gain insight into their influence on price.
+
+## Price
+
+The first thing we look at is our target variable. The histogram of price shows a roughly normal distribution with a heavy right skew, but this is expected for positive bounded variables (price cannot be negative).
+
+```{r}
+ggplot(df,aes(x=price))+ geom_histogram(binwidth=20)+
+coord_cartesian(xlim = c(0, 500)) +
+  theme(axis.text.x = element_text(angle = 90),
+        axis.title.x = element_text(size = 12),
+        axis.title.y = element_text(size = 12),
+        plot.title = element_text(color="black", face="bold", size=16, hjust=0),
+        panel.grid.major = element_line(colour = "grey90", size = 0.2),
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(fill = 'white'),
+        legend.position = "none")+
+        labs( x="Price", y="Count")+
+        ggtitle("Histogram of Price")
+
+```
+
+## Room type
+
+We first created a box plot to see the distribution of price by room type. In the figure below, there is a price for privacy. The entire place visibly has a higher distribution of price followed by private rooms, hotel rooms, and shared rooms. It should be noted that we can see there is minimal data available for hotels and shared rooms, so it is difficult to define definite conclusions for them compared to the entire place and private room. After that, the table presents the average means of each room type’s listings, ordering in a descending way. The entire place has the highest average price compared to the other three prices.
+
+```{r}
+ggplot(df,aes(x=room_type, y=price))+ geom_boxplot(outlier.shape = NA ) +
+coord_cartesian(ylim = quantile(df$price, c(0.0, .95)))+
+  geom_jitter(width=0.15, alpha=.2, aes(colour=room_type))+
+  theme(axis.text.x = element_text(angle = 90, size=10))+
+  theme(axis.text.x = element_text(angle = 90),
+        axis.title.x = element_text(size = 12),
+        axis.title.y = element_text(size = 12),
+        plot.title = element_text(color="black", face="bold", size=16, hjust=0),
+        panel.grid.major = element_line(colour = "grey90", size = 0.2),
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(fill = 'white'),
+        legend.position = "none")+
+        labs( x="Room Type", y="Price")+
+        ggtitle("Box Plot of Price Distribution by Room Type")
+```
+## Neighbourhood
+
+To see the affect of neighborhood on price, we create a box plot to show the distribution of Airbnb listing prices across our ten neighborhoods. Displayed below, we see these neighborhoods not only look to have varying means but also varying spreads, suggesting that the price of an Airbnb will be different depending on the selected neighborhood. The ranking of average prices of neighborhoods tells us the highest is in areas like Downtown and Chinatown.
+
+```{r, results='markup'}
+
+#create column for neighborhood name in visualizations
+df$neighbourhood_short <- str_sub(df$neighbourhood,1,15)
+
+#add in column for frequency of listings
+df_freq <- merge(df, data.frame(table(neighbourhood = df$neighbourhood)), by = c("neighbourhood"))
+
+#subset data where frequency is greater than 175
+df_175 <-  df_freq[ which(df_freq$Freq>175), ]
+
+# box plot of price vs neighbourhood
+ggplot(df_175,aes(x=neighbourhood_short, y=price))+ geom_boxplot(outlier.shape = NA ) +
+coord_cartesian(ylim = quantile(df$price, c(.0, .95)))+
+  geom_jitter(width=0.15, alpha=.2, aes(colour=neighbourhood_short))+
+  theme(axis.text.x = element_text(angle = 90, size=9))+
+  theme(axis.text.x = element_text(angle = 90),
+        axis.title.x = element_text(size = 12),
+        axis.title.y = element_text(size = 12),
+        
+        plot.title = element_text(color="black", face="bold", size=16, hjust=0),
+        panel.grid.major = element_line(colour = "grey90", size = 0.2),
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(fill = 'white'),
+        legend.position = "none")+
+        labs( x="Neighborhood", y="Price")+
+        ggtitle("Box Plot of Price Distribution by Neighborhood")
+
+# delete the new column
+df$neighbourhood_short <- NULL
+```
+
+To look at only the neighborhoods with a large amount of Airbnb listings to compare, we used the descending rank of counts of each neighborhood’s Airbnb listings and pulled the top neighborhoods where each neighborhood’s listing frequency is greater than 175.
+
+## Location
+
+We have longitude and latitude available in our dataset. We plot that according to neighbourhood, with radius of a circle indicating the average price of that location. We can see that as we go westward, away from the downtown area, the prices tend be lower.
+
+```{r, results = "show"}
+means_df <- df_175 %>%
+  group_by(neighbourhood_short,neighbourhood) %>%
+  summarise_at(vars(c(price, Freq, latitude,longitude)), funs(mean(., na.rm=TRUE)))
+
+#id for neighborhoods
+means_df$ID <- seq.int(nrow(means_df))
+
+pal1 <- colorFactor(topo.colors(length(means_df$neighbourhood_short)), domain = means_df$neighbourhood_short)
+# create leaflet map 
+map <- leaflet(means_df) %>%
+  addTiles() %>%
+  addCircleMarkers(lng = ~longitude,
+                   lat = ~latitude,
+             radius=~sqrt(price),
+                   color=~pal1(neighbourhood_short), stroke = FALSE, 
+                   fillOpacity = 0.7)%>%
+  addLegend("bottomright",pal = pal1, values = ~means_df$neighbourhood_short, opacity = 1, title = "Neighbourhood")
+map %>%  addProviderTiles(providers$CartoDB.Positron)
+```
+
+## Amenities
+
+We also look at all the different amenities that our possible in an AirBnb unit.
+
+```{r}
+d <- df_knn[,9:70]
+d <- data.frame(ammenity = names(d),amount=colSums(d))
+sums <- d[order(-d$amount),]
+sums <- head(sums,15)
+
+## set the levels in order we want
+
+ggplot(data=sums, aes(x=reorder(ammenity, -amount), y=amount)) +
+  geom_bar(stat="identity", fill ="dodgerblue")+
+  theme(axis.text.x = element_text(angle = 90, size=14))+
+  theme(axis.text.x = element_text(angle = 90),
+        axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14),
+        plot.title = element_text(color="black", face="bold", size=18, hjust=0),
+        panel.grid.major = element_line(colour = "grey90", size = 0.2),
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(fill = 'white'),
+        legend.position = "none")+
+  labs( x="Amenity (Top 15)", y="Frequency")+
+  ggtitle("Distribution of Amenities in DC AirBnBs")
+
+```
+
+There were 62 different amenities, amongst which we have picked top 15 with the highest frequency. We have made a count plot to analyse the frequency of these top 15 amenities in amongst the different airbnb properties.
+
+
+These amenities are arranged in descending order of their frequency, with Wi-fi having the highest frequency and hair-dryer having the lowest frequency.
+
+```{r}
+library(corrplot)
+colnames(df_knn)
+df_knn_corr <- df_knn[,c(1,4,5,7,8,9,10,26,34,35,37,38,40,43,46,49,50,66,67,68,69)]
+m <- cor(df_knn_corr)
+corrplot(m, method = 'shade', diag = FALSE,  tl.cex = 0.7, type="upper", 
+         tl.col = "darkblue", tl.srt = 45)
+```
+
+Our main variable for this entire report is "price". To check which variables have the highest correlation with "price", we have made a correlation plot. 
+From the correlation plot it was observed, that the variable "price" has strongest correlation with "guests accommodated", "number of beds" & "Airbnb room type". 
+Apart from these, we also found some more notable strong correlations,i.e. guest accommodated and number of beds, room type and tv & kitchen and washer.
+
+All these correlation are very logical can be justified by common sense. 
+
+# Modeling
+
+We have seen from our exploratory data analysis efforts that the features in our dataset do tend to have some influence on price. We attempt to create a predictive model for price using approaches such as linear regression, k-nearest neighbors, regression tree and random forest.
+
+## Linear Regression
+
+The first approach we try is classic linear regression. The residuals vs fitted plot shows an even spread of residuals, with no concerning patterns. There are some outliers with very high residuals. The residuals vs leverage plot allows insight into whether these outliers have any undue influence. All points are within the Cook's distance lines, so do not have very high influence on the model. Thus, outlier removal is not expected to be very fruitful.
+
+
+```{r}
+
+# fit model
+lr <-    lm(price ~ ., data = df)
+plot(lr)
+```
+The high cardinality of a lot of our factor features leads to the number of variables in the model ballooning to 116.
+
+```{r, results = 'show'}
+lr_all_features <- summary(lr)$coefficients %>% as.data.frame()
+lr_all_features %>% kable()
+```
+Of the 116 coefficients, only 27 were found significant for the model. We plot the ten most important features based on magnitude of the coefficients to get a better idea of their contributions to the predictions. We can see that the number of bedrooms drives the price up. We can also see that longitude has a highly negative coefficient, which indicates that as we go westward (longitude increases), the price is expected to decrease. We see this in the map plot as well.
+
+```{r}
+lr_top_features <- lr_all_features %>%
+  mutate(feature = rownames(lr_all_features)) %>%
+  filter(`Pr(>|t|)` < 0.05 & feature != '(Intercept)') %>%
+  arrange(abs(Estimate)) %>%
+  select(Estimate, feature) %>%
+  tail(10)
+
+ggplot(lr_top_features, aes(x=feature, y = Estimate)) + geom_bar(stat="identity") + coord_flip()
+```
+
+```{r}
+# metrics
+lr_pred <- predict(lr)
+actual <- df$price
+lr_mse <- mean((actual - lr_pred)^2)
+lr_rmse <- sqrt(mean((actual - lr_pred)^2))
+lr_mae <- mean(abs(actual - lr_pred))
+lr_r2 <- R2(actual, lr_pred)
+```
+
+With a root mean squared error of `r lr_rmse`and mean absolute error of `r lr_mae`, the metrics are not very promising. The R**2 value is at an abysmal `r lr_r2`.
+
+Due to the very low R2 value even with a full model, there is no value to be gained by removing insignificant or correlated features for a subsequent linear model. The R2 would decrease with less features. Thus, we shift our focus to other model approaches.
+
+## Regression Tree
+
+We also fit a regression tree to the dataset. To control complexity, we keep `minsplit` as 100 and `cp` as 0.01.
+
+```{r, results = 'show'}
+# fit model
+tree_fit <- rpart(price ~ ., method="anova", control=rpart.control(minsplit=100, cp=0.01), data=df)
+printcp(tree_fit)
+```
+
+The variables actually used in tree construction are bedrooms, carbon monoxide alarm, hot water and neighbourhood. This is expected as these are important drivers of price in the real estate market.
+
+
+```{r}
+plotcp(tree_fit)
+```
+
+The graph of X-val relative error vs size of tree shows that the error has plateaued at maximum size of our tree. This indicates the size of our tree is optimum and a bigger tree would not have led to a better model.
+
+```{r}
+# plot tree
+library(rpart.plot)
+prp(tree_fit)
+```
+
+Bedrooms is at the root node of the tree which indicates that it is the most important feature for this model.
+
+```{r}
+# metrics
+tree_pred <- predict(tree_fit)
+actual <- df$price
+tree_mse <- mean((actual - tree_pred)^2)
+tree_rmse <- sqrt(mean((actual - tree_pred)^2))
+tree_mae <- mean(abs(actual - tree_pred))
+tree_r2 <- R2(actual, tree_pred)
+```
+
+With a root mean squared error of `r tree_rmse` and mean absolute error of `r tree_mae`, the metrics are somewhat better than that of the linear regression model. The R**2 value is also much higher at `r lr_r2`.
+
+## K-nearest Neighbours
+
+For our next modeling technique, we will create a KNN regression, using an all numerical version of our dataset. While traditionally used for classification problems, KNN can be used for regression by averaging the values in neighboring observations to approximate how closely independent values are associated to the continuous predictor. 
+
+For this model, our predictor is price and our independent values are all the numerical values within the dataset. Logical amenity columns are converted to 0/1 (0 = False, 1 = True) for the purpose of this model. 
+
+Feature selection through PCA was considered for this model. Reducing the number of variables by odeling with up to PCA 30 (~80% Variance Explained) and PCA 10(~10% Variance Explained) did not improve the model and will not be considered for the remainder of this analysis. 
+
+```{r}
+# #pca to determine threshold for variables for knn
+#
+# # dataset
+# pca_train = train %>% select( -price )
+# pca_test = test %>% select( -price )
+# pca_test_units <- df_knn_units %>% select( -price )
+#
+# pr.out <- prcomp(pca_train, scale =TRUE)
+# summary(pr.out)
+#
+# biplot(pr.out, scale = 0)
+#
+#
+# pr.var <- (pr.out$sdev^2)
+# pve <- pr.var/sum(pr.var)
+# plot(cumsum(pve), xlab="Principal Component (standardized)", ylab ="Cumulative Proportion of Variance Explained",ylim=c(0,1),type="b")
+
+#to decrease the variables significantly we will want to reduce variance explained threshold to 80%
+```
+
+The training dataset for this model was created with 80% split of the numerical dataset. This is used to help us find the best k to use in our training model. When we run the data, while scaling and centering, we find that the best K is 29.
+
+```{r results = 'show'}
+
+#without PCA Preprocessing
+
+ctrl0 <- trainControl(method = "repeatedcv", number = 5, repeats=3)
+
+knnFit0 <- train(price ~ .,
+                 data = train, 
+                 method     = "knn",
+                 tuneGrid   = expand.grid(k = 1:30),
+                 trControl  = ctrl0, 
+                 preProcess = c('scale','center'),
+                 metric     = "RMSE")
+
+knnFit0
+
+
+# #with PCA 30
+# 
+# # Creating a new dataset
+# train_pca <-  data.frame( price = train$price, pr.out$x )
+# test_pca <- as.data.frame( predict( pr.out, newdata = pca_test ) )
+# test_pca_units <-  as.data.frame(predict(pr.out, newdata=pca_test_units))
+# 
+# new_train = train_pca[, 1:31]
+# new_test =  test_pca[, 1:30]
+# unit_pred =  test_pca_units[, 1:30]
+# 
+# 
+# #run new knn
+# 
+# ctrl <- trainControl(method = "repeatedcv", number = 5, repeats=3)
+# 
+# knnFit <- train(price ~ .,
+#                 data = new_train, 
+#                 method     = "knn",
+#                 tuneGrid   = expand.grid(k = 1:30),
+#                 trControl  = ctrl, 
+#                 preProcess = c('scale','center'),
+#                 metric     = "RMSE")
+# 
+# knnFit
+
+
+```
+
+With this model, we will now input the test data to measure our model's accuracy to determine just how good of a job it does at predicting price. To do this we will compare the predicted prices outputted from our model against the actual prices in our test data. The summary of our test data is shown below. 
+
+```{r results = 'show'}
+
+summary(test)
+
+#test model accuracy without pca
+knnPredict0 <- predict(knnFit0,newdata = test[,-8])
+
+
+mse0 = mean((test$price - knnPredict0)^2)
+mae0 = caret::MAE(test$price, knnPredict0)
+rmse0 = caret::RMSE(test$price, knnPredict0)
+
+##R-square
+SSres = sum((test$price - knnPredict0)^2)
+SStot = sum((test$price - mean(train$price))^2)
+Rsquare = 1 - SSres/SStot
+
+# 
+# cat("MSE: ", mse0, "MAE: ", mae0, " RMSE: ", rmse0)
+# 
+# #test model accuracy with pca 30
+# knnPredict <- predict(knnFit,newdata = new_test)
+# 
+# mse = mean((test$price - knnPredict)^2)
+# mae = caret::MAE(test$price, knnPredict)
+# rmse = caret::RMSE(test$price, knnPredict)
+# 
+# cat("MSE: ", mse, "MAE: ", mae, " RMSE: ", rmse)
+
+
+```
+
+We find that this model has a $r^2$ of `r Rsquare`, an MSE of `r mse0`, an MAE of `r mae0` and a rmse of `r rmse0`. These results do not show a significantly strong model.
+
+The plot below shows a graphical representation of this analysis by showing the predicted price in blue and the actual price in red. We see that while the pattern of the predicted does match the pattern of the predicted, the model overall tends to underpredict the actual price.
+
+```{r}
+
+#plot comparison without PCA
+
+
+x <- 1:length(test$price)
+plot(x, test$price, col = "firebrick1", type = "l", lwd=2,
+     main = "DC AirBnB Price by Unit (Predicted and Actual)",ylab="Price ($)")
+lines(x, knnPredict0, col = "dodgerblue", lwd=2)
+legend("topright",  legend = c("Original-Price", "Predicted-Price"), 
+       fill = c("firebrick1", "dodgerblue"), col = 2:3,  adj = c(0, 0.6))
+
+# calculate accuracy.
+kNN_res = table(knnPredict0,
+                test$price)
+kNN_res
+sum(kNN_res)  #<- the total is all the test examples
+
+# Select the true positives and true negatives by selecting
+# only the cells where the row and column names are the same.
+kNN_res[row(kNN_res) == col(kNN_res)]
+
+# Calculate the accuracy rate by dividing the correct classifications
+# by the total number of classifications.
+kNN_acc = sum(kNN_res[row(kNN_res) == col(kNN_res)]) / sum(kNN_res)
+acc_perc <- kNN_acc*100
+
+#accuracy at the nearest 10
+kNN_acc2 = sum(kNN_res[round(row(kNN_res),-2) == round(col(kNN_res),-2)]) / sum(kNN_res)
+acc_perc2 <- kNN_acc2*100
+
+#accuracy at the nearest 100
+kNN_acc3 = sum(kNN_res[round(row(kNN_res),-3) == round(col(kNN_res),-3)]) / sum(kNN_res)
+acc_perc3 <- kNN_acc3*100
+
+
+#roubd to nearest 10 to test accuracy
+
+
+# #plot comparison with PCA 30
+# new_test_g <- cbind(test[,8], new_test)
+# colnames(new_test_g)[1] <- "price"
+# 
+# x <- 1:length(new_test_g$price)
+# plot(x, new_test_g$price, col = "firebrick1", type = "l", lwd=2,
+#      main = "DC AirBnB test data prediction")
+# lines(x, knnPredict, col = "dodgerblue", lwd=2)
+# legend("topright",  legend = c("original-price", "predicted-price"), 
+#        fill = c("firebrick1", "dodgerblue"), col = 2:3,  adj = c(0, 0.6))
+# 
+# # calculate accuracy.
+# kNN_res2 = table(knnPredict,
+#                 new_test_g$price)
+# kNN_res2
+# sum(kNN_res2)  #<- the total is all the test examples
+# 
+# # Select the true positives and true negatives by selecting
+# # only the cells where the row and column names are the same.
+# kNN_res2[row(kNN_res2) == col(kNN_res2)]
+# 
+# # Calculate the accuracy rate by dividing the correct classifications
+# # by the total number of classifications.
+# kNN_acc2 = sum(kNN_res2[row(kNN_res2) == col(kNN_res2)]) / sum(kNN_res2)
+# kNN_acc2*100
+
+```
+
+When plotting the predicted data from our model against the test data we find that we only have an accuracy rate of `r acc_perc`%. Even though this is low, we understand that price being a continuous variable, it makes it very hard to predict the price perfectly. To account for this, we also tested for the accuracy of the model predicting price to the accurate tens and hundreds. For the tens we have an accuracy of `r acc_perc2`% and at the hundreds we have `r acc_perc3`%. None of these levels show the model having a good accuracy percentage at predicting price. 
+
+This backs up our findings earlier that this model did not explain a significant portion of the variance. This may suggest that either KNN regression is not the best modeling technique for this problem, or that there are additional variables not within this dataset that should be considered when predicting price. 
+
+We should continue to look at additional modeling techniques for this problem before predicting the price of our units. 
+
+```{r}
+#predict our unit prices without PCA
+
+# knnPredict2 <- predict(knnFit0,newdata = df_knn_units[,-8])
+# knnPredict2
+
+# #predict our unit prices with PCA
+# 
+# knnPredict3 <- predict(knnFit,newdata = test_pca_units)
+# knnPredict3
+
+
+```
+
+## Random Forest
+
+We then use the random forest regression for modeling. Since there are multiple categorical variables in the data, we initally do the one-hot encoding, which is to give a dummy for each categorical variable. For example, if column A has True/False value, we then divide this column A into column_A_True and column_A_False, and both columns have two levels of values: 0 and 1. This is an ordinary technique to input the categorical variables into the models.
+
+```{r echo=FALSE, include = FALSE}
+# encode the variables
+library(mltools)
+library(data.table)
+library(randomForest)
+library(Metrics)
+
+df.prep = as.data.table(df)
+df_encoded = one_hot(df.prep)
+```
+
+```{r include = FALSE}
+# drop unnecessary columns that cant be proceeded not encoded correctly
+#df_pcr = subset(df_encoded, select = -c(id, name, amenities))
+#df_pcr[,165]
+#df_pcr[,80]
+#df_pcr = df_pcr[,-c(80,165)]
+df_pcr = df_encoded
+```
+
+We rename the columns' names to get rid of the special characters and symbols for more convenient input. And we use the train-test-split by 7:3. 
+
+```{r include = FALSE}
+#split train test
+data = sort(sample(nrow(df_pcr), nrow(df_pcr)*0.7))
+train_data = df_pcr[data,]
+test_data = df_pcr[-data,]
+```
+
+```{r include = FALSE}
+#encode
+names(df_pcr) <- gsub(" ", "_", names(df_pcr))
+names(df_pcr) <- gsub(",", "", names(df_pcr))
+names(df_pcr) <- gsub("-", ".", names(df_pcr))
+names(df_pcr) <- gsub("/", ".", names(df_pcr))
+
+
+names(train_data) <- gsub(" ", "_", names(train_data))
+names(train_data) <- gsub(",", "", names(train_data))
+
+names(test_data) <- gsub(" ", "_", names(test_data))
+names(test_data) <- gsub(",", "", names(test_data))
+
+names(train_data) <- gsub("-", ".", names(train_data))
+names(test_data) <- gsub("-", ".", names(test_data))
+
+names(train_data) <- gsub("/", ".", names(train_data))
+names(test_data) <- gsub("/", ".", names(test_data))
+```
+
+After that, we start building the random forest regression, using the training dataset for fit and setting the number of trees as 2000 and number of considering features at each split as 10, trying to maximize the performance. We print the summary of the model and plot the MSE trend against number of trees.
+
+The result may be not too impressive for its mean of sqaured residuals and percentage of explained variance from the summary. The plot also shows that the MSE cannot be decreased after using around 100 trees for the forest.
+
+```{r include = FALSE}
+rf.model2 = randomForest(price ~ ., data=train_data, type = 'regression', ntree = 2000, mtry = 10, importance = TRUE, na.action = na.omit)
+```
+
+```{r results = 'markup'}
+print(rf.model2)
+plot(rf.model2)
+```
+
+Here is a comparison of predictions and actuals of our data records' price using this model. Each residual could be within 15-30.
+
+```{r results = 'markup'}
+#install.packages('Metrics')
+pred_total = predict(rf.model2, df_pcr)
+
+res_total = df_pcr$price - pred_total
+
+output = data.frame(pred_total, df_pcr$price)
+
+names(output) <- c('Predictions', 'Actuals')
+
+str(output)
+```
+
+```{r include = FALSE}
+rm = rmse(df_pcr$price , pred_total)
+
+rsq = 1 - var(res_total) / var(df_pcr$price)
+
+ma = mae(df_pcr$price , pred_total)
+```
+For the evaluation, we again use the RMSE, R-Squared, and MAE as the standards. The RMSE of this Random Forest is ```r rm```, R-Sqaured is ```r rsq```, MAE is ```r ma```. The evaluation is a fair result based on the tuning and inputs yet the model can be improved in the future.
+
+# Predict the Example 3 Prices
+
+We have made four models in total and have obtained their evaluation results. The random forest regression has the overall best performance among them based on its evaluation scores of RMSE, R-Squared, and MAE. So we will use the random forest regression to predict a competitive price for each of the created listing mentioned at beginning.
+
+```{r include = FALSE}
+test_units.prep = as.data.table(test_units)
+
+# get columns we need
+test_units.prep <- test_units.prep %>% 
+  mutate(neighbourhood = as.factor(neighbourhood),
+         room_type = as.factor(room_type))
+
+test_units_encoded = one_hot(test_units.prep)
+
+names(test_units_encoded) <- gsub(" ", "_", names(test_units_encoded))
+names(test_units_encoded) <- gsub(",", "", names(test_units_encoded))
+names(test_units_encoded) <- gsub("-", ".", names(test_units_encoded))
+names(test_units_encoded) <- gsub("/", ".", names(test_units_encoded))
+
+whole = rbind(df_pcr, test_units_encoded, fill=TRUE)
+whole[is.na(whole)] <- 0
+df_test = tail(whole, n = 3)
+
+pred = predict(rf.model2, df_test)
+```
+
+Here are our predicted prices: one shared room in Dupont Circle for 1 guest is ```r pred[1]```, one private room near Howard University for up to two guests is ```r pred[2]```, and one entire property in Capitol Hill for up to eight guests is ```r pred[3]```.
+
+# Conclusions
+
+Based on our results of prediction, the results for private room and entire property are reasonable prices due to their settings; however, the one for the shared room is a bit surprising. Perhaps this price results from the good location of Dupont Circle and a nice fireplace. Overall, these results are partially reliable at this state.
+
+Although we have used several models for this analysis, we find the only one that worked the best is the random forest regression. It is a trustworthy model indeed, yet the current random forest model's evaluation result is only a fair one. There is still space for improvements. Our other models like linear regression, regression tree, and KNN possibly have improvements to make, too.
+
+This analysis is full of potentials. We only pick a few variable columns from the dataset, leaving others not being used. We can combine the use of other columns with our current ones to check any improvements. For example, the information of hosts is a good target of next step. Price could be affected whether a host is a superhost and how a host describes the living place. And we have not used much of those various rating scores. We have focused too much on the Airbnb listings' locations, guest requirements, and amenities. 
+
+In the end, location, amenities, and number of accomodates are some crucial factors that are worth to consider for setting an airbnb listing's price, but these are not the all. Price can be given more appropriately if involving some other factors, and such investigation will be our next step.
+
+# References
+
+1. Wells, Charlie. (2021, August 26). Bloomberg Wealth: It's Never Been a Better Time to Be a Landlord. Retrieved December 11, 2021, from https://www.bloomberg.com/news/newsletters/2021-08-26/house-rentals-the-u-s-rental-market-is-surging-right-now-here-s-what-to-do.
+
+2.Ziraldo, Katie. (2021, November 18). Airbnb Investment: Is It Right For You In 2021? Retrieved December 11, 2021, from
+https://www.rocketmortgage.com/learn/airbnb-investment

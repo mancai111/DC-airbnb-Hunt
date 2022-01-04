@@ -1,0 +1,639 @@
+---
+title: "D.C. Airbnb Hunt"
+author: "Foo Fivers: Adrienne Rogers ; Atharva Haldankar ; Mohammad Maaz ; Ricky Li"
+date: "`r Sys.Date()`"
+output:
+  prettydoc::html_pretty:
+    theme: architect
+    highlight: github
+    toc: true
+    number_sections: true
+
+---
+
+```{r, echo = FALSE, results = 'hide', message = FALSE, warning = FALSE}
+library(tidyverse)
+library(dplyr)
+library(knitr)
+library(kableExtra)
+library(readr)
+library(plyr)
+library(ggplot2)
+library(knitr)
+library(kableExtra)
+library(leaflet)
+library(tidytext)
+library(stringr)
+library(wordcloud)
+library(ezids)
+knitr::opts_chunk$set(warning = FALSE, echo=FALSE, results='hide', fig.align = 'center')
+```
+
+# Introduction
+
+As travel continues to open up across the world, more travelers are exploring locations they are unfamiliar with. Lodging is a crucial, yet complicated decision to make when traveling to a new location. There are many factors to take into consideration, and they all come at a cost. The gig economy has opened up more opportunities for travelers as private homeowners are able to provide a more customized experience at a competitive price compared to major hotel chains. 
+
+Airbnb is a hotel competitor, which provides lodging for visitors in predominantly privately owned residences. While large hotel chains have dominated the market by providing a similar experience, no matter the location, Airbnb has emerged in the market due to its variety of selection. Airbnbs tend to offer a diverse experience, for better or for worse. Due to this variety, ratings have become an important factor for users when placing a booking. Mingming Chen and Xin Jin’s paper of “What do Airbnb users care about? An analysis of online review comments”, they suggest the Airbnb users may rate and comment on their experiences with the similar accommodation standards of location, amenities, and host for valuing hotels but in different order of importance (Paragraph 58). Therefore, these aggregated user ratings signal to future users the quality of stay over a variety of factors, such as location, accessibility, cleanliness, accuracy, value, etc. 
+
+By providing a wide selection of listings, Airbnb has been able to create a market where Airbnbs with similar locations and capacity can be listed at a wider price point than a traditional hotel. According to the statistical data posted by ipropertymanagement, the general price of Airbnb listings in Europe is about 8%-17% cheaper than the hotels, while the percentage is 6% - 17% cheaper in the United States (paragraph 4). 
+
+Travelers looking through an Airbnb website or app may have hundreds of options to choose from depending on their preferences and locality. The District of Columbia (DC), for example, offers some 7,800 Airbnb listings to travelers to choose from at any time. In markets like this, narrowing it down to just one Airbnb rental could be a painstaking process of research and comparison. Exploring the dataset of all listings in a locality such as DC, can provide a better understanding of the crucial decision-making KPI of listing rating, as well as give insight to travelers about how to best subset or limit their vacation rental search.
+
+# SMART Questions
+
+To provide greater insights for travelers looking to book an Airbnb in DC, we will be utilizing the DC Airbnb listing data to identify the neighborhoods within DC that provide the best overall value properties (highest rating at the lowest price). This will be our primary SMART question. Furthermore, we will also analyze additional factors to look for in a listing to ensure a high-quality visit to the district. For example, we would like to discover the influence of room type in the decision of neighborhoods. In addition, we are interested in how listing names posted by the hosts affect their Airbnbs’ values.
+
+# Dataset
+
+```{r, echo = FALSE}
+df <- read.csv('listings_detailed.csv')
+```
+
+The raw data is obtained from Inside Airbnb, an open-source data tool providing the web scraped Airbnb listing information by cities. It includes `r nrow(df)` records with `r ncol(df)` data columns in total size. Below are all of the data columns. For example, we have columns for id, price, host name, location, neighborhood, review rating score, etc.
+  
+```{r, echo = FALSE}
+colnames(df)
+```
+
+```{r, echo=FALSE}
+df <- df %>% 
+  dplyr::select(id, name, host_is_superhost, host_listings_count, neighbourhood_cleansed, latitude, longitude, room_type, bedrooms, beds, amenities, price, availability_60, number_of_reviews, review_scores_rating,  review_scores_accuracy, review_scores_cleanliness,
+            review_scores_checkin, review_scores_communication, review_scores_location, review_scores_value, reviews_per_month) %>% 
+  dplyr::mutate(price = as.numeric(parse_number(price)),
+         neighbourhood_cleansed = as.factor(neighbourhood_cleansed),
+         amenities = lengths(strsplit((str_sub(df$amenities, 2, -2)), ",")),
+         room_type = as.factor(room_type),
+         bedrooms = as.factor(bedrooms)) %>%
+  dplyr::rename(neighbourhood = neighbourhood_cleansed)
+df = na.omit(df)
+
+
+#create column for neighborhood name in visualizations
+df$neighbourhood_short <- str_sub(df$neighbourhood,1,15)
+#add in column for frequency of listings
+df_freq <- merge(df, data.frame(table(neighbourhood = df$neighbourhood)), by = c("neighbourhood"))
+
+#subset data where frequency is greater than 175
+df_175 <-  df_freq[ which(df_freq$Freq>175), ]
+```
+  
+We then preprocessed this raw dataset by selecting specific data columns and converting the datatypes of some columns. Eventually, the cleaned dataset has `r ncol(df)` records with `r nrow(df)` columns after column renaming and NA removal.
+
+```{r, echo = FALSE}
+#pretty output for presentation
+data.frame(variable = names(df),
+           classe = sapply(df, typeof),
+           first_values = sapply(df, function(x) paste0(head(x,2),  collapse = ", ")),
+           row.names = NULL) %>% 
+  kable()
+```
+
+# Descriptive statistics
+
+We first inspected the normality of the data columns like price, number of reviews, review rating scores, amenities, and reviews per month by generating the histograms and Q-Q plots for each of them. All distribution plots are made without including the possible outliers.
+
+## Histogram and QQ plot for Price
+
+The histogram of price shows a slight tendency of right skewness with the majority of prices in the range of $75-$100. Meanwhile, its Q-Q plot indicates that some points are a bit away from the normality line.
+
+```{r, fig.show='hide'}
+Price_No_Outlier = outlierKD2(df, price, rm=TRUE)
+```
+
+```{r, results = 'markup'}
+par(mfrow = c(1,2))
+hist(Price_No_Outlier$price, main = 'Histogram of Price', xlim = c(0,350))
+qqnorm(Price_No_Outlier$price, main="Q-Q plot of Price")
+qqline(Price_No_Outlier$price)
+```
+
+## Histogram and QQ plot for Number of Reviews
+
+The histogram of the Number of Reviews shows a steep right skewness with the majority of less than 30. We can also see that half of the points are off the trace of the normality line.
+
+```{r, fig.show='hide'}
+Number_of_Reviews_No_Outlier = outlierKD2(df, number_of_reviews, rm=TRUE)
+```
+
+```{r, results='markup'}
+par(mfrow = c(1,2))
+hist(Number_of_Reviews_No_Outlier$number_of_reviews, main = 'Histogram of Number of Reviews', xlim = c(0,200))
+qqnorm(Number_of_Reviews_No_Outlier$number_of_reviews, main="Q-Q plot of Number of Reviews")
+qqline(Number_of_Reviews_No_Outlier$number_of_reviews)
+```
+
+## Histogram and QQ plot for Amenities
+
+Amenities have a fairly good bell shape in the histogram, indicating that it is close to a normal distribution. This means most Airbnb listings have 30-35 amenities. The Q-Q plot has a perfect trace of points following along the normality line.
+
+```{r, fig.show='hide'}
+Number_of_Amenities_No_Outlier = outlierKD2(df, amenities, rm=TRUE)
+```
+
+```{r, results='markup'}
+par(mfrow = c(1,2))
+hist(Number_of_Amenities_No_Outlier$amenities, main = 'Histogram of Amenities', xlim = c(0,65))
+qqnorm(Number_of_Amenities_No_Outlier$amenities, main="Q-Q plot of Amenities")
+qqline(Number_of_Amenities_No_Outlier$amenities)
+```
+
+## Histogram and QQ plot for Review Scores
+
+The review rating scores tend to give a histogram with obvious left skewness. The possible reason should be the scale since many scores are within the range of 4.7-5.0, resulting in the high-frequency bins close to 5.0. In the Q-Q plot, a portion of the points is laying horizontally at 5.0 while other points are sticking to the normality line.
+
+
+```{r, fig.show='hide'}
+Number_of_review_scores_rating_No_Outlier = outlierKD2(df, review_scores_rating, rm=TRUE)
+```
+
+```{r, results='markup'}
+par(mfrow = c(1,2))
+hist(Number_of_review_scores_rating_No_Outlier$review_scores_rating, main = 'Histogram of Review Scores', xlim = c(4,6))
+qqnorm(Number_of_review_scores_rating_No_Outlier$review_scores_rating, main="Q-Q plot of Review scores")
+qqline(Number_of_review_scores_rating_No_Outlier$review_scores_rating)
+```
+
+## Histogram and QQ plot for Reviews per Month
+
+Column of reviews per month produces similar results with the number of reviews. The right-skewed histogram shows the majority of less than 1 review per month, yet many points are close to the normality line.
+
+```{r, fig.show='hide'}
+Number_of_reviews_per_month_No_Outlier = outlierKD2(df, reviews_per_month, rm=TRUE)
+```
+
+```{r, results = 'markup'}
+par(mfrow = c(1,2))
+hist(Number_of_reviews_per_month_No_Outlier$reviews_per_month, main = 'Histogram of Reviews per Month', xlim = c(0,10))
+qqnorm(Number_of_reviews_per_month_No_Outlier$reviews_per_month, main="Q-Q plot of Reviews per Month")
+qqline(Number_of_reviews_per_month_No_Outlier$reviews_per_month)
+```
+
+From the plots like price and review rating score, they are not that normal or close to normal because skewness was found in some of their histograms and Q-Q points were a bit off the normality line. Amenities has the best overall performance among them.
+
+# Exploratory Data Analysis
+## Overview of Room Type
+
+Airbnb offers four types of rooms: entire place, private room, hotel room, and shared room. Looking at the pie chart below, we found in DC the primary type of rental available was the entire place with private room following behind it. We found that a small proportion of listings were hotels or shared rooms (insert proportions in r). Each listing can only be one type of rental, and there can be no rentals with no room type (no overlaps or nulls).
+
+```{r, results='markup'}
+d = as.data.frame(table(df$room_type))
+group.colors = c("Entire home/apt" ="#51c5ed","Shared room"="#C3EB78","Private room"="#ff616f","Hotel room"="#3D348B")
+ggplot(d, aes(y = Freq, x = "", fill = Var1)) + geom_bar(width=3, stat = "identity")+ coord_polar("y", start = 0)  + labs(title = "DC AirBnB Pie Chart of Room Types", x = "", y = "")+ 
+  theme(
+        legend.title=element_text(size=9),
+        plot.title = element_text(color="black", face="bold", size=16, hjust=0),
+        panel.grid.major = element_line(colour = "grey90", size = 0.2),
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(fill = 'white'),legend.position="right")+
+        scale_fill_manual(values=group.colors)+
+        labs(fill = "Room Type")
+```
+
+## Price and Room Type
+
+Price is important for booking a listing. To understand how a listing may be selected, we tested to see if variation in price was significantly different by room type. 
+
+We first created a box plot to see the distribution of price by room type. In the figure below, there is a price for privacy. The entire place visibly has a higher distribution of price followed by private rooms, hotel rooms, and shared rooms. It should be noted that we can see there is minimal data available for hotels and shared rooms, so it is difficult to define definite conclusions for them compared to the entire place and private room. After that, the table presents the average means of each room type’s listings, ordering in a descending way. The entire place has the highest average price compared to the other three prices. 
+
+
+```{r}
+ggplot(df,aes(x=room_type, y=price))+ geom_boxplot(outlier.shape = NA ) +
+coord_cartesian(ylim = quantile(df$price, c(0.0, .95)))+
+  geom_jitter(width=0.15, alpha=.2, aes(colour=room_type))+
+  theme(axis.text.x = element_text(angle = 90, size=10))+
+  theme(axis.text.x = element_text(angle = 90),
+        axis.title.x = element_text(size = 12),
+        axis.title.y = element_text(size = 12),
+        plot.title = element_text(color="black", face="bold", size=16, hjust=0),
+        panel.grid.major = element_line(colour = "grey90", size = 0.2),
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(fill = 'white'),
+        legend.position = "none")+
+        scale_colour_manual(values=group.colors)+
+        labs( x="Room Type", y="Price")+
+        ggtitle("Box Plot of Price Distribution by Room Type")
+```
+
+```{r, results="show"}
+price_room = df %>%
+  group_by(room_type) %>%
+  summarise_at(vars(price), list(price = mean))
+price_room = data.frame(price_room)
+price_room[order(-rank(price_room$price), decreasing = FALSE), ]%>% 
+  kbl() %>%
+  kable_paper("hover", full_width = F)
+```
+
+```{r, results = "show", fig.align = 'center'}
+#anova test to compare mean price
+anovaRes_price1 <-  aov(price ~ room_type, data=df_175)
+xkabledply(anovaRes_price1, title = "Price by Room Type ANOVA")
+
+```
+
+We ran an ANOVA, with the data subset we will be using to answer our SMART question, to test our null hypothesis that there was no significant difference in the means of price across room types. Our result shows a low p-value of `r summary(anovaRes_price1)[[1]][[1,"Pr(>F)"]]`, meaning we can reject the null hypothesis and conclude that there is a statistically significant difference in price across room types.
+
+## Review Rating Score and Room Type
+
+We did the same analysis for review score rating as we did for price across room types. We first created a box plot to visually show the difference between the ratings by room type. We see here that the entire place has a slighter higher spread than the private room which has a higher spread than the shared room and the hotel room. The average review score rating of entire place listings is higher than the other three, yet the difference between entire place and private is much smaller than the difference between private room and hotel room.
+
+```{r}
+ggplot(df,aes(x=room_type, y=review_scores_rating))+ geom_boxplot(outlier.shape = NA ) +
+coord_cartesian(ylim = quantile(df$review_scores_rating, c(.01, 1)))+
+  geom_jitter(width=0.15, alpha=.2, aes(colour=room_type))+
+  theme(axis.text.x = element_text(angle = 90, size=10))+
+  theme(axis.text.x = element_text(angle = 90),
+        axis.title.x = element_text(size = 12),
+        axis.title.y = element_text(size = 12),
+        plot.title = element_text(color="black", face="bold", size=16, hjust=0),
+        panel.grid.major = element_line(colour = "grey90", size = 0.2),
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(fill = 'white'),
+        legend.position = "none")+
+        scale_colour_manual(values=group.colors)+
+        labs( x="Room Type", y="Rating")+
+        ggtitle("Box Plot of Rating Distribution by Room Type")
+```
+
+```{r, results ="show"}
+rating_room = df %>%
+  group_by(room_type) %>%
+  summarise_at(vars(review_scores_rating), list(review_scores_rating = mean))
+rating_room = data.frame(rating_room)
+rating_room[order(-rank(rating_room$review_scores_rating), decreasing = FALSE), ]%>% 
+  kbl() %>%
+  kable_paper("hover", full_width = F)
+```
+
+```{r, results = "show"}
+#anova test to compare mean rating
+anovaRes_rating1 <-  aov(review_scores_rating ~  room_type, data=df_175)
+xkabledply(anovaRes_rating1, title = "Rating by Room Type ANOVA")
+
+```
+
+We again ran an ANOVA with the data subset we will be using to answer our SMART questions. We tested our null hypothesis that there was no significant difference in the means of price across room types. Our result shows am low p-value of `r summary(anovaRes_rating1)[[1]][[1,"Pr(>F)"]]`, once again allowing us to reject the null hypothesis and conclude that there is a statistically significant difference in review score rating across room types.
+
+## Overview of Neighborhood
+
+DC has 39 separate neighborhoods defined by Airbnb in our original dataset. In the frequency plot below, the total numbers of all Airbnb listings are shown. This shows us that DC Airbnbs are not evenly distributed across the district and there are a handful of neighborhoods with a high frequency of Airbnbs while most have less than 100 listings.
+
+```{r, results='markup'}
+#create column for neighborhood name in visualizations
+df$neighbourhood_short <- str_sub(df$neighbourhood,1,15)
+#add in column for frequency of listings
+df_freq <- merge(df, data.frame(table(neighbourhood = df$neighbourhood)), by = c("neighbourhood"))
+#create barplot of airbnb frequency by DC neighborhoods
+ggplot(df_freq,aes(x=reorder(neighbourhood_short, neighbourhood_short, function(x)-length(x))))+geom_bar(aes(fill = room_type), alpha=.9)+ theme(axis.text.x = element_text(angle = 90),
+        axis.title.x = element_text(size = 9),
+        axis.title.y = element_text(size = 9),
+        legend.title=element_text(size=9),
+        plot.title = element_text(color="black", face="bold", size=16, hjust=0),
+        panel.grid.major = element_line(colour = "grey90", size = 0.2),
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(fill = 'white'),legend.position="top")+
+        scale_fill_manual(values=group.colors)+
+        labs(fill = "Room Type", x="Neighborhood", y="# of AirBnBs Listed")+
+        ggtitle("Frequency of AirBnBs by Neighborhood and Room Type") 
+#v = as.data.frame(table(df$neighbourhood))
+#v1 = v %>% slice(1:20)
+#v2 = v %>% slice(21:50)
+#par(mfrow = c(1,2))
+#barplot(v1$Freq, main = "Barplot of Neighborhood Counts P1", ylab = "Count",  width = 5, names.arg = v1$Var1, las = 2, cex.names=0.6, col = 'darkred')
+#barplot(v2$Freq, main = "Barplot of Neighborhood Counts P2", ylab = "Count",  width = 5, names.arg = v2$Var1, las = 2, cex.names=0.6, col = 'lightblue')
+```
+```{r}
+#subset data where frequency is greater than 175
+df_175 <-  df_freq[ which(df_freq$Freq>175), ]
+
+#str(df_175)
+means_df <- df_175 %>%
+  group_by(neighbourhood_short,neighbourhood) %>%
+  summarise_at(vars(c(price,review_scores_rating, Freq, latitude,longitude)), funs(mean(., na.rm=TRUE)))
+means_df_rt <- df_175 %>%
+  group_by(neighbourhood_short,neighbourhood,room_type) %>%
+  summarise_at(vars(c(price,review_scores_rating, Freq, latitude,longitude)), funs(mean(., na.rm=TRUE)))
+```
+
+To look at only the neighborhoods with a large amount of Airbnb listings to compare, we used the descending rank of counts of each neighborhood’s Airbnb listings and pulled the top neighborhoods where each neighborhood’s listing frequency is greater than 175.
+
+```{r}
+
+#create barplot of airbnb frequency by DC neighborhoods
+ggplot(df_175,aes(x=reorder(neighbourhood_short, neighbourhood_short, function(x)-length(x))))+geom_bar(aes(fill = room_type), alpha=.9)+ theme(axis.text.x = element_text(angle = 90),
+        axis.title.x = element_text(size = 9),
+        axis.title.y = element_text(size = 9),
+        legend.title=element_text(size=9),
+        plot.title = element_text(color="black", face="bold", size=16, hjust=0),
+        panel.grid.major = element_line(colour = "grey90", size = 0.2),
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(fill = 'white'),legend.position="top")+
+        scale_fill_manual(values=group.colors)+
+        labs(fill = "Room Type", x="Neighborhood", y="# of AirBnBs Listed")+
+        ggtitle("Frequency of AirBnBs by Neighborhood and Room Type") 
+        
+        n_distinct(df_175$neighbourhood)
+
+```
+
+In our subsetted data, we find there are `r n_distinct(df_175$neighbourhood)` DC neighborhoods with a listing frequency of greater than 175 units. 
+
+Looking across the entire dataset and in our subset of top 10 neighborhoods with the highest frequency of Airbnb listings, we find that the proportion of room type does not vary much across the neighborhoods. All neighborhoods are made up predominantly of entire places with some share of private rooms. In our subset, we do see two neighborhoods with hotels (Dupont Circle, Capitol Hill) and five neighborhoods with shared rooms (Capitol Hill, Columbia Heights, Dupont Circle, Shaw/Logan Circle, Kalorama Heights).
+
+## Price and Neighbourhood
+
+To see if Airbnb listings vary by price, we created a box plot to show the distribution of Airbnb listing prices across our ten neighborhoods. Displayed below, we see these neighborhoods not only look to have varying means but also varying spreads, suggesting that the price of an Airbnb will be different depending on the selected neighborhood. The ranking of average prices of neighborhoods tells us the highest is in areas like Downtown and Chinatown.
+
+```{r}
+ggplot(df_175,aes(x=neighbourhood_short, y=price))+ geom_boxplot(outlier.shape = NA ) +
+coord_cartesian(ylim = quantile(df$price, c(.0, .95)))+
+  geom_jitter(width=0.15, alpha=.2, aes(colour=neighbourhood_short))+
+  theme(axis.text.x = element_text(angle = 90, size=9))+
+  theme(axis.text.x = element_text(angle = 90),
+        axis.title.x = element_text(size = 12),
+        axis.title.y = element_text(size = 12),
+        
+        plot.title = element_text(color="black", face="bold", size=16, hjust=0),
+        panel.grid.major = element_line(colour = "grey90", size = 0.2),
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(fill = 'white'),
+        legend.position = "none")+
+        labs( x="Neighborhood", y="Price")+
+        ggtitle("Box Plot of Price Distribution by Neighborhood")
+```
+
+```{r}
+price_neighbor = df_175 %>%
+  group_by(neighbourhood) %>%
+  summarise_at(vars(price), list(price = mean))
+price_neighbor = data.frame(price_neighbor)
+price_neighbor[order(-rank(price_neighbor$price), decreasing = FALSE), ]%>% 
+  kbl() %>%
+  kable_paper("hover", full_width = F)
+```
+
+
+```{r, results = "show"}
+#anova test to compare mean price
+anovaRes_price2 <-  aov(price ~ neighbourhood, data=df_175)
+xkabledply(anovaRes_price2, title = "Price by Neighborhood ANOVA")
+
+```
+
+We ran an ANOVA, with the data subset, to test our null hypothesis that there was no significant difference in the means of price across neighborhoods. Our result shows a low p-value of `r summary(anovaRes_price2)[[1]][[1,"Pr(>F)"]]`, meaning we can reject the null hypothesis and conclude that there is a statistically significant difference in price across neighborhoods. This will give us the confidence to use each neighborhood's mean price as a meaningful variable when ranking DC neighborhoods.  
+
+## Review Score Rating and Neighbourhood
+
+We ran the same analysis for review rating score as we did for price across neighborhoods. We started by looking at a boxplot to examine the distribution of review rating scores across neighborhoods. We don’t see as much variation in this boxplot as we did for the price, as all tend to skew towards the highest ranking of 5. From the list of average review rating scores, the union station and its nearby area have the highest rating. 
+
+```{r}
+ggplot(df_175,aes(x=neighbourhood_short, y=review_scores_rating))+ geom_boxplot(outlier.shape = NA ) +
+coord_cartesian(ylim = c(3,5))+
+  geom_jitter(width=0.15, alpha=.2, aes(colour=neighbourhood_short))+
+  theme(axis.text.x = element_text(angle = 90, size=9))+
+  theme(axis.text.x = element_text(angle = 90),
+        axis.title.x = element_text(size = 12),
+        axis.title.y = element_text(size = 12),
+        
+        plot.title = element_text(color="black", face="bold", size=16, hjust=0),
+        panel.grid.major = element_line(colour = "grey90", size = 0.2),
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(fill = 'white'),
+        legend.position = "none")+
+        labs( x="Neighborhood", y="Rating")+
+        ggtitle("Box Plot of Rating Distribution by Neighborhood")
+
+```
+
+```{r}
+rating_neighbor = df_175 %>%
+  group_by(neighbourhood) %>%
+  summarise_at(vars(review_scores_rating), list(review_scores_rating = mean))
+rating_neighbor = data.frame(rating_neighbor)
+#rating_neighbor
+rating_neighbor[order(-rank(rating_neighbor$review_scores_rating), decreasing = FALSE), ]%>% 
+  kbl() %>%
+  kable_paper("hover", full_width = F)
+```
+
+```{r, results = "show"}
+#anova test to compare mean price
+anovaRes_rating2 <-  aov(review_scores_rating ~ neighbourhood, data=df_175)
+xkabledply(anovaRes_rating2, title = "Rating by Neighborhood ANOVA")
+
+```
+
+And we ran another ANOVA, with the data subset, to test our null hypothesis that there was no significant difference in the means of review score rating across neighborhoods. Our result shows a low p-value of `r summary(anovaRes_rating2)[[1]][[1,"Pr(>F)"]]`, meaning we can reject the null hypothesis and conclude that there is a statistically significant difference in price across neighborhoods. This will give us the confidence to use each neighborhood's mean review score rating as a meaningful variable when ranking DC neighborhoods.  
+
+## What DC Neighborhoods Have Best Overall Value?
+
+For this question, we will define “value” as a rental unit where the price is below the average and the review rating score is above the average. We know from our data analysis that there is a significant difference in mean price and mean review rating score across neighborhoods, so we will use this to make our comparison. We graphed mean neighborhood price versus mean neighborhood review rating score in the scatterplot below. We used the overall mean price and mean review rating score for our subset to provide our cutoff for value, this is shown below in red. 
+
+```{r, results = "show"}
+
+#create mean columns in dataframe
+means_df <- df_175 %>%
+  group_by(neighbourhood_short,neighbourhood) %>%
+  summarise_at(vars(c(price,review_scores_rating, Freq, latitude,longitude)), funs(mean(., na.rm=TRUE)))
+means_df_rt <- df_175 %>%
+  group_by(neighbourhood_short,neighbourhood,room_type) %>%
+  summarise_at(vars(c(price,review_scores_rating, Freq, latitude,longitude)), funs(mean(., na.rm=TRUE)))
+ggplot(means_df) + geom_point(aes(x=review_scores_rating, y=price, colour=neighbourhood_short),size=4)+ theme(axis.text.x = element_text(angle = 90),
+        axis.title.x = element_text(size = 9),
+        axis.title.y = element_text(size = 9),
+        legend.title=element_text(size=9),
+        plot.title = element_text(color="black", face="bold", size=16, hjust=0),
+        panel.grid.major = element_line(colour = "grey90", size = 0.2),
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(fill = 'white'),
+        legend.position="right")+
+        labs(colour = "Neighborhood", x="Mean Rating", y="Mean Price")+
+        ggtitle("Mean Price by Mean Rating for DC Neighborhoods")+ geom_hline(yintercept=mean(means_df$price), linetype="dashed", color = "red")+
+        annotate("text", x=4.635, y=(mean(means_df$price)+3), label="Overall Price Avg", color = "red",size=3)+
+   geom_vline(xintercept=mean(means_df$review_scores_rating), linetype="dashed", color = "red")+
+        annotate("text", x=(mean(means_df$review_scores_rating)+.023), y=122.7, label="Overall Rating Avg", color = "red",size=3)
+means_df_select <- means_df[which(means_df$price<mean(means_df$price) & means_df$review_scores_rating > mean(means_df$review_scores_rating)),]
+#id for neighborhoods
+means_df_select$ID <- seq.int(nrow(means_df_select))
+means_df_select[c(8,2:4)]%>% 
+  kbl() %>%
+  kable_paper("hover", full_width = F)
+
+
+# #short for presentation
+# 
+# means_df_select[c(8,2:3)]%>% 
+#   kbl() %>%
+#   kable_paper("hover", full_width = F)
+```
+
+This revealed `r nrow(means_df_select)` neighborhoods that have an overall average Airbnb price lower than the group mean and a review rating score mean higher than the group mean. These neighborhoods are mapped below based on the mean longitude and latitude of the listings in the neighborhood. The size of the bubble represents the comparative frequency of listings in the neighborhood. 
+
+```{r, results = "show"}
+
+pal1 <- colorFactor(c("#72B000","#00BFC4","#7997ff"), domain = c("Columbia Height", "Edgewood, Bloom", "Kalorama Height"))
+# create leaflet map 
+map <- leaflet(means_df_select) %>%
+  addTiles() %>%
+  addCircleMarkers(lng = ~longitude,
+                   lat = ~latitude, 
+                   radius=~sqrt(Freq),
+                   color=~pal1(neighbourhood_short),
+                   label=~ID,
+
+                   labelOptions = labelOptions(noHide = T, textOnly = T, textsize = "13px",direction = 'center',style = list( "color" = "white")),
+                   stroke = FALSE, 
+                   fillOpacity = 0.7)%>%
+  addLegend("bottomright",pal = pal1, values = ~means_df_select$neighbourhood_short, opacity = 1, title = "Room Type")
+map %>%  addProviderTiles(providers$CartoDB.Positron)
+```
+
+## What DC Neighborhoods have Best Overall Value by Room Type?
+
+From our analysis above, we know there is a significant difference in price and review rating score across room types. To see if our neighborhoods with the best value change by room type, we added room type into our best value analysis. For this analysis, we calculated our neighborhood means by room type and then plotted each against the average price and review rating score by room type. This is plotted in the scatter plot below where the neighborhood is indicated by color and room type is shown by shape. Each group mean for comparison is marked by a horizontal or vertical line. 
+
+```{r}
+means_df_rt_eha <- means_df_rt[which(means_df_rt$room_type=="Entire home/apt"),]
+means_df_rt_pr <- means_df_rt[which(means_df_rt$room_type=="Private room"),]
+means_df_rt_sr <- means_df_rt[which(means_df_rt$room_type=="Shared room"),]
+means_df_rt_hr <- means_df_rt[which(means_df_rt$room_type=="Hotel room"),]
+ggplot(means_df_rt) + geom_point(aes(x=review_scores_rating, y=price, colour=neighbourhood_short, shape=room_type),size=4, alpha=.85)+  scale_shape_manual(values=c(21,22,23,24))+
+  theme(axis.text.x = element_text(angle = 90),
+        axis.title.x = element_text(size = 9),
+        axis.title.y = element_text(size = 9),
+        legend.title=element_text(size=9),
+        plot.title = element_text(color="black", face="bold", size=16, hjust=0),
+        panel.grid.major = element_line(colour = "grey90", size = 0.2),
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(fill = 'white'),
+        legend.position="right")+
+        labs(colour = "Neighborhood", x="Mean Rating", y="Mean Price")+
+        ggtitle("Mean Price by Mean Rating in DC Neighborhoods")+ geom_hline(yintercept=mean(means_df_rt_eha$price), linetype="dashed", color = "#51c5ed")+
+        annotate("text", x=2.7, y=(mean(means_df_rt_eha$price)+8), label="Entire home/apt avg", color = "#51c5ed",size=3)+
+        geom_vline(xintercept=mean(means_df_rt_eha$review_scores_rating), linetype="dashed", color = "#51c5ed")+       
+        geom_hline(yintercept=mean(means_df_rt_pr$price), linetype="dashed", color = "#C3EB78")+ 
+        annotate("text", x=2.6, y=(mean(means_df_rt_pr$price)+8), label="Private room avg", color = "#C3EB78",size=3)+
+        geom_vline(xintercept=mean(means_df_rt_pr$review_scores_rating), linetype="dashed", color = "#C3EB78")+
+        geom_hline(yintercept=mean(means_df_rt_sr$price), linetype="dashed", color = "#ff616f")+
+        annotate("text", x=2.6, y=(mean(means_df_rt_sr$price)+8), label="Shared room avg", color = "#ff616f",size=3)+
+        geom_vline(xintercept=mean(means_df_rt_sr$review_scores_rating), linetype="dashed", color = "#ff616f")+
+        geom_hline(yintercept=mean(means_df_rt_hr$price), linetype="dashed", color = "#3D348B")+
+        annotate("text", x=2.6, y=(mean(means_df_rt_hr$price)+8), label="Hotel room avg", color = "#3D348B",size=3)+
+        geom_vline(xintercept=mean(means_df_rt_hr$review_scores_rating), linetype="dashed", color = "#3D348B")
+means_df_rt_eha_select <- means_df_rt_eha[which(means_df_rt_eha$price<mean(means_df_rt_eha$price) & means_df_rt_eha$review_scores_rating > mean(means_df_rt_eha$review_scores_rating)),]
+means_df_rt_pr_select <- means_df_rt_pr[which(means_df_rt_pr$price<mean(means_df_rt_pr$price) & means_df_rt_pr$review_scores_rating > mean(means_df_rt_pr$review_scores_rating)),]
+means_df_rt_sr_select <- means_df_rt_sr[which(means_df_rt_sr$price<mean(means_df_rt_sr$price) & means_df_rt_sr$review_scores_rating > mean(means_df_rt_sr$review_scores_rating)),]
+means_df_rt_hr_select <- means_df_rt_hr[which(means_df_rt_hr$price<mean(means_df_rt_hr$price) & means_df_rt_hr$review_scores_rating > mean(means_df_rt_hr$review_scores_rating)),]
+means_df_rt_select <- rbind(means_df_rt_eha_select,means_df_rt_pr_select,means_df_rt_sr_select,means_df_rt_hr_select)
+```
+
+This revealed a list of neighborhoods different from the list we found in the overall comparison. The results are mapped below based on the mean longitude and latitude of the listings in the neighborhood. The color indicates the room type and the size shows the comparative frequency of listings in the neighborhood. What we find is that the large proportion of data being entire places, skewed our overall neighborhood results as our entire place results mimic those results the most, while our additional room types vary. The only room type with no deals selected is the hotel type. This is most likely due to the lack of data to produce neighborhoods that differ from both the mean price and rating. 
+
+```{r, results = "show"}
+
+#id for neighborhoods
+means_df_rt_select$ID <- seq.int(nrow(means_df_rt_select))
+means_df_rt_select[c(9,2:5)]%>% 
+  kbl() %>%
+  kable_paper("hover", full_width = F)
+
+# #short for presentation
+# 
+# means_df_rt_select[c(9,2:3)]%>% 
+#   kbl() %>%
+#   kable_paper("hover", full_width = F)
+```
+
+```{r, results = "show"}
+
+#color palette
+pal2 <- colorFactor(c("#51c5ed","#C3EB78","#ff616f","#3D348B"), domain = c("Entire home/apt","Shared room","Private room","Hotel room"))
+# create leaflet map 
+map2 <- leaflet(means_df_rt_select) %>%
+  addTiles() %>%
+  addCircleMarkers(lng = ~longitude,
+                   lat = ~latitude, 
+                   radius=~sqrt(Freq),
+                   color=~pal2(room_type),
+                   label=~ID,
+           labelOptions = labelOptions(noHide = T, textOnly = T, textsize = "9px",direction = 'center',style = list( "color" = "white")),
+                   stroke = FALSE, 
+                   fillOpacity = 0.6)%>% 
+addLegend("bottomright",pal = pal2, values = ~means_df_rt_select$room_type, opacity = 1, title = "Room Type")
+map2 %>%  addProviderTiles(providers$CartoDB.Positron)
+```
+
+## Do names of listings have an influence on value?
+
+The listing name is added by the host themselves in order to make the listing as attractive as possible. All listings try to keep catchy and attractive names to get clicks by prospective guests. It usually contains features of the place, such as “near metro” and “spacious”. We want to investigate whether names with certain characteristics are better or worse than others. We believe that these listing names contain information that might not otherwise be present in any of the columns in the dataset.
+
+```{r, echo = FALSE, results = 'markup', message = FALSE, warning = FALSE}
+data(stop_words)
+corpus <- df %>% select(id, name) %>%
+  unnest_tokens(word, name) %>% filter(!word %in% stop_words$word, str_detect(word, "[a-z]"))
+all_words <- corpus %>% group_by(word) %>% dplyr::summarise(count = n())
+wordcloud(words = all_words$word, freq = all_words$count, , min.freq = 50, colors=brewer.pal(8, "Dark2"))
+```
+
+The word cloud to identify if there were any terms that were more prevalent than others. The size of the word indicates frequency, and sure enough, some terms are indeed more frequent than others.
+
+Now we want to investigate whether some terms indicate higher value. Here value is defined as a combination of rating and price. We plot each term on a scatter plot with rating on the X-axis and price on the Y-axis, with size indicating the frequency.
+
+```{r, echo = FALSE, results = 'markup', message = FALSE, warning = FALSE}
+df_corpus <- corpus %>% left_join(df)
+corpus_agg <- df_corpus %>% 
+  group_by(word) %>% 
+  dplyr::summarise(avg_rating = mean(review_scores_rating), avg_price = mean(price), count = n()) %>% 
+  filter(count > 150)
+ggplot(corpus_agg, aes(x=avg_rating, y=avg_price)) + geom_text(label=corpus_agg$word, aes(size=count, color = word)) + scale_size_continuous(range = c(2, 10)) + guides(color=FALSE)
+```
+
+
+
+```{r, echo = FALSE, results = 'markup', message = FALSE, warning = FALSE}
+str(df)
+```
+# Different models to predict the price
+##Linear model
+```{r echo = FALSE, results = 'markup', message = FALSE, warning = FALSE}
+loadPkg("leaps")
+df$host_is_superhost = factor(df$host_is_superhost)
+df$neighbourhood_short= factor(df$neighbourhood_short)
+df_new = subset(df,select = -c(name,neighbourhood,latitude,longitude,host_listings_count,id))
+reg.best10 <- regsubsets(price ~. , data = df_new, nvmax = 10, nbest = 2, method = "exhaustive",really.big = T)
+plot(reg.best10, scale = "adjr2", main = "Adjusted R^2")
+summary(reg.best10)
+```
+
+```{r, echo = FALSE, results = 'markup', message = FALSE, warning = FALSE}
+model1 = lm(price ~ neighbourhood_short+room_type+bedrooms+amenities,data = df)
+summary(model1)
+```
+
+```{r, echo = FALSE, results = 'markup', message = FALSE, warning = FALSE}
+unique(df_new$neighbourhood_short,incomparables = FALSE)
+```
+
+```{r, echo = FALSE, results = 'markup', message = FALSE, warning = FALSE}
+priceee = data.frame(neighbourhood_short= "Downtown, China",room_type ="Entire home/apt",bedrooms="5",amenities=44 )
+predict(model1,priceee, type = "response", se = TRUE)
+```
+# Conclusion and Discussion
+
+The dataset has a few limitations. There are too many data columns but the number of useful columns is way less than the total number. It has many columns about the rating scores, but it does not have the data column of users’ comments. Most rating scores are clustered between 4.0 and 5.0, so it could be hard to do future differentiations on ratings, but it may be much easier with the complement of users’ text reviews if we can determine the positivity and the negativity of users’ attitudes showing from their comments. 
+
+During the Exploratory Data Analysis, we have obtained a few interesting findings by investigating the best neighborhoods by multiple factors, which help us answer our current research questions. We think there is no need to change our questions because price and review rating scores do play important roles in deciding an Airbnb’s value differently, with the additional consideration of room types. 
+
+Our definition of neighborhoods with the best value (price under average while rating score above average) has led us to see three neighborhoods that satisfy our expectation: The areas around Columbia Heights, Edgewood, and Kalorama Heights.
+
+We also implemented the room type after the basic analysis on neighborhoods. For entire place, we consider areas around Columnbia Heights, Dupont circle, Edgewood Heights, and Kalorama Heights as the best picks. If the traveler prefers private room, then the neighborhoods of Edgewood, Howard University, and Union Station have the best value. Otherwise, neighborhoods with best shared room listings are located nearby Capitol Hill, Columnbia Heights, Downtown, Shaw, and Union Station. We can see multiple neighborhoods overlap on the levels of room types, which is an interesting finding. This can be a potential topic for next-step research.
+
+The investigation of names of listings brings us some more useful insights. We see some high-frequency words like private, metro, bedroom, parking, etc. These suggest that travellers may care about how they can commute and what living coniditions they can get. Then bringing this into our definition of best value, livings around historic places have the best rating while average price is around 200 dollars. The spacious livings have a moderate average rating within the plot, this is quite surprising because it means bigger living may not necessarily increase the rating score. However, the listings related to metro have the similar rating score compared to those related to parking. It may indicate driving in DC is not worse than taking a ride of metro.
+
+We can see there are many potential topics that can help us develop our research. We could introduce other data columns like amenities for the next steps. Each listing may provide different amenities, and we have turned the amenities column’s values of amenity list into an integer count of each list. Studying how amenities affect the rating and the price could be a potential question. Each listing could have a different set of amenities differentiated in quantity and quality. The number of reviews and the total number of ratings would be helpful to distinguish the hosts, learning who are excellent hosts.
+
+# References
+
+1. Bustamante, J. (2021, November 4). Airbnb statistics [2021]: User & market growth data. iPropertyManagement.com. Retrieved November 7, 2021, from https://ipropertymanagement.com/research/airbnb-statistics.
+
+2. Cheng, M., & Jin, X. (2018, May 1). What do airbnb users care about? an analysis of online review comments. International Journal of Hospitality Management. Retrieved November 7, 2021, from https://www.sciencedirect.com/science/article/pii/S0278431917307491?casa_token=RtKGCn1sDZEAAAAA%3ApDdFk5V-qR-b2TLSDQimzIdh8LleualUtg7nQzMMapsoco44oZbA4qZ1J7zAWpbYkjNr1FI-5dg.
