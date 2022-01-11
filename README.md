@@ -1,4 +1,4 @@
-# airbnb-analysis
+# DC Airbnb Analysis
 
 This team project's purpose is to investigate the Airbnb listings in Washington D.C. 
 
