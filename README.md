@@ -10,6 +10,10 @@ This data will comes from Inside Airbnb (http://insideairbnb.com/get-the-data.ht
 
 Contributors:
 Ruiqi Li
+
 Mohammad Maaz
+
 Adrienne Rogers
+
 Atharva Haldankar
+
